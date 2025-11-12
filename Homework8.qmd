@@ -1,0 +1,431 @@
+---
+title: "ST558 Homework 8"
+author: "Lanette Tyler"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+## Data: Seoul Bike Sharing Demand
+
+The Seoul Bike Sharing Demand data set contains information about hourly bike rentals in the Seoul Bike Sharing System for the year from 12/01/2017 to 11/30/2017. The data set also contains corresponding weather, date, time, season, and holiday information. The data is housed at the IC Irvine Machine Learning Repository. See more information about the data here: <https://archive.ics.uci.edu/dataset/560/seoul+bike+sharing+demand>
+
+The purpose of this analysis is to explore the data and fit a multiple Linear Regressions (MLR) model.
+
+### Load packages for analysis:
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(tidymodels)
+library(rsample)
+```
+
+## EDA: Checking and Exploring Data
+
+### Read in data:
+
+```{r}
+bike_data <- read_csv("https://www4.stat.ncsu.edu/~online/datasets/SeoulBikeData.csv", locale = locale(encoding = "latin1"))
+head(bike_data) #take a look
+```
+
+### Check for missing values:
+
+```{r}
+sum(is.na(bike_data))
+```
+
+There are no missing values in the data.
+
+### Check columns for data type and reasonable values:
+
+```{r}
+summary(bike_data)
+```
+
+The date, seasons, holiday, and functioning day variables are all formatted as character data. The rest of the values are numeric, and the basic summary statistics seem reasonable for the numeric variables.
+
+### Rename variables:
+
+Rename the variables to make them easier to work with.
+
+```{r}
+names(bike_data) <- c("date", "bike_count", "hour", "temp", "hum", "wind_speed", "vis", "dew_pt", "sol_rad", "rainfall", "snowfall", "seasons", "holiday", "func_day")
+```
+
+### Convert data types as needed:
+
+Convert date column to date data-type and seasons, holiday, and functional day columns to factors.
+
+```{r}
+bike_data <- bike_data |>
+  mutate(date = dmy(date),
+         seasons = as.factor(seasons),
+         holiday = as.factor(holiday),
+         func_day = as.factor(func_day))
+```
+
+### Check columns for data type and reasonable values again after transfroming data:
+
+```{r}
+summary(bike_data)
+```
+
+Numeric variables already checked out and have not changed, but now we can see that the data column (as date data) and the seasons, holiday, and functional day columns (as factors) also look reasonable.
+
+### Create summary statistics:
+
+Focus on summary statistics for hourly bike rental data (bike_count).
+
+```{r}
+#overall summary of hourly bike rental counts
+bike_data |>
+  summarize ("min" = min(bike_count), "mean" = mean(bike_count), "median" = median(bike_count), "max" = max(bike_count), "sd" = sd(bike_count))
+```
+
+The median hourly bike rental count is less than the mean, indicating a right-skewed data set. The standard deviation is between the median and the mean in value, which seems like a lot of variability.
+
+```{r}
+#grouped by seasons
+bike_data |>
+  group_by(seasons) |>
+  summarize ("min" = min(bike_count), "mean" = mean(bike_count), "median" = median(bike_count), "max" = max(bike_count), "sd" = sd(bike_count))
+```
+
+Summer had the highest mean, median, and max hourly bike rentals, while winter has the lowest.
+
+```{r}
+#grouped by holiday or not
+bike_data |>
+  group_by(holiday) |>
+  summarize ("min" = min(bike_count), "mean" = mean(bike_count), "median" = median(bike_count), "max" = max(bike_count), "sd" = sd(bike_count))
+```
+
+Values are higher for non-holidays.
+
+```{r}
+#grouped by functioning day or not
+bike_data |>
+  group_by(func_day) |>
+  summarize ("min" = min(bike_count), "mean" = mean(bike_count), "median" = median(bike_count), "max" = max(bike_count), "sd" = sd(bike_count))
+```
+
+We see that there were no bike rentals recorded for non-functional days, so we will drop these values from the data set. That whole group is basically "NA." The bike sharing system seems to have been closed or otherwise unavailable.
+
+### Re-create previous summaries without non-functional days, and add correlation:
+
+```{r}
+#overall summary of hourly bike rental counts
+bike_data |>
+  filter(func_day == "Yes") |>
+  summarize ("min" = min(bike_count), "mean" = mean(bike_count), "median" = median(bike_count), "max" = max(bike_count), "sd" = sd(bike_count))
+```
+
+The minimum, mean, and median all shifted up a bit without the non-functional days, and the standard deviation decreased a bit. Overall the results are similar.
+
+```{r}
+#grouped by seasons
+bike_data |>
+  filter(func_day == "Yes") |>
+  group_by(seasons) |>
+  summarize ("min" = min(bike_count), "mean" = mean(bike_count), "median" = median(bike_count), "max" = max(bike_count), "sd" = sd(bike_count))
+```
+
+Hourly bike rentals are highest in summer and lowest in winter.
+
+```{r}
+#grouped by holiday or not
+bike_data |>
+  filter(func_day == "Yes") |>
+  group_by(holiday) |>
+  summarize ("min" = min(bike_count), "mean" = mean(bike_count), "median" = median(bike_count), "max" = max(bike_count), "sd" = sd(bike_count))
+```
+
+Again, there are more bike rentals on non-holidays than on holidays.
+
+```{r}
+#correlation matrix
+bike_data |>
+  filter(func_day == "Yes") |>
+  select(where(is.numeric)) |>
+  cor()
+```
+
+Focusing on the first set of correlation coefficients (between hourly bike rentals (bike_count) and the other numeric variables), we don't see strong correlations, but the strongest are with temperature (0.56), hour (0.43) and dew point (0.40).
+
+### Simplify Dataset from Hourly to Daily
+
+For the purpose of this analysis, we will simplify the hourly bike rental data set into a daily bike rental data set. Variables will be averaged or summed across the day or just carried over, as appropriate for each variable. Non-functional days are dropped.
+
+```{r}
+daily_bike_data <- bike_data|>
+  filter(func_day == "Yes") |>
+  group_by(date, seasons, holiday) |>
+  summarize(bike_count = sum(bike_count), 
+            rainfall = sum(rainfall), 
+            snowfall = sum(snowfall), 
+            temp = mean(temp),
+            hum = mean(hum),
+            wind_speed = mean(wind_speed),
+            vis = mean(vis),
+            dew_pt = mean(dew_pt),
+            sol_rad = mean(sol_rad)) |>
+  ungroup()
+
+head(daily_bike_data) #take a look
+```
+
+### Create Summary Statistics and Plots for Daily Data Set
+
+Focus on daily bike counts.
+
+```{r}
+#overall summary of daily bike rentals
+daily_bike_data |>
+  summarize ("min" = min(bike_count), "mean" = mean(bike_count), "median" = median(bike_count), "max" = max(bike_count), "sd" = sd(bike_count))
+```
+
+Unlike the hourly summaries, the daily bike rental mean is lower than the median and the standard deviation is about half the median/mean value.
+
+```{r}
+#grouped by seasons
+daily_bike_data |>
+  group_by(seasons) |>
+  summarize ("min" = min(bike_count), "mean" = mean(bike_count), "median" = median(bike_count), "max" = max(bike_count), "sd" = sd(bike_count))
+```
+
+The summary statistics are generally much lower for winter, with the exception of minimum value. Summer has the highest values, followed by autumn.
+
+```{r}
+#grouped by holiday or not
+daily_bike_data |>
+  group_by(holiday) |>
+  summarize ("min" = min(bike_count), "mean" = mean(bike_count), "median" = median(bike_count), "max" = max(bike_count), "sd" = sd(bike_count))
+```
+
+Again there are more daily rentals on non-holidays, although the minimum is lower.
+
+```{r}
+#grouped by season and holiday
+daily_bike_data |>
+  group_by(seasons, holiday) |>
+  summarize ("min" = min(bike_count), "mean" = mean(bike_count), "median" = median(bike_count), "max" = max(bike_count), "sd" = sd(bike_count))
+```
+
+Below is a correlation matrix of all numeric variables in the data set:
+
+```{r}
+#correlation matrix
+daily_bike_data |>
+  select(where(is.numeric)) |>
+  cor()
+```
+
+Focusing on the first column bike_data, we can see that the correlation coefficients are higher for the daily bike counts than for the hourly. We see the strongest correlations to temperature (0.75), solar radiation (0.73), and dew point (0.65).
+
+Let's look at some plots of the daily bike rentals:
+
+```{r}
+#density curves of daily bike rentals grouped by seasons
+ggplot(daily_bike_data, aes(x = bike_count, fill = seasons)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Daily Bike Rentals", y = "Density", title = "Plot: Smoothed Density Curves for Bike Rentals by Season")
+```
+
+Winter is very different from the other seasons.
+
+```{r}
+#density curves of daily bike rentals grouped by holiday/non-holiday
+ggplot(daily_bike_data, aes(x = bike_count, fill = holiday)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Daily Bike Rentals", y = "Density", title = "Plot: Smoothed Density Curves for Bike Rentals, Holiday vs. Non-Holiday")
+```
+
+Non-holidays are bi-modal, with the lower peak corresponding to the uni-modal peak for holidays.
+
+```{r}
+#box plot of daily bike rentals grouped by season
+ggplot(daily_bike_data, aes(x = seasons, y = bike_count, fill = seasons)) +
+  geom_boxplot() +
+  labs(x = "Seasons", y = "Daily Bile Rentals", title = "Box Plot: Bike Rentals by Season")
+```
+
+Winter is visibly very different.
+
+```{r}
+#box plot of daily bike rentals grouped by holiday/non-holiday
+ggplot(daily_bike_data, aes(x = holiday, y = bike_count, fill = holiday)) +
+  geom_boxplot() +
+  labs(x = "Holiday/Non-Holiday", y = "Daily Bike Rentals", title = "Box Plot: Bike Rentals by Holiday/Non-Holiday")
+```
+
+```{r}
+#scatter plot of daily bike rentals vs. temperature, grouped by seasons
+ggplot(daily_bike_data, aes(x = temp, y = bike_count, color = seasons)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(x = "Temperature (C)", y = "Count of Daily Bike Rentals",
+       title = "Scatter Plot")
+```
+
+There are more bike rentals with increasing temperature, except for summer when the relationship inverts.
+
+```{r}
+#scatter plot of daily bike rentals vs rainfall, grouped by seasons
+ggplot(daily_bike_data, aes(x = rainfall, y = bike_count, color = seasons)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(x = "Rainfall (mm)", y = "Count of Daily Bike Rentals",
+       title = "Scatter Plot")
+```
+
+The plot shows fewer bike rentals with greater rainfall, but it is also clear that most days have no rainfall, weakening the overall correlation.
+
+## Split the Data:
+
+For fitting linear regression models (LRM's), the first step is to split the data for training the models.
+
+Split the data into training and testing sets:
+
+```{r}
+set.seed(50)
+bike_split <- initial_split(daily_bike_data, prop = 3/4, strata = seasons)
+bike_train <- training(bike_split)
+bike_test <- testing(bike_split)
+```
+
+On the training set, create a 10-fold cross validation (CV) split:
+
+```{r}
+set.seed(49)
+folds <- vfold_cv(bike_train, v = 10)
+```
+
+## Fit MLR Models:
+
+Start with writing recipes:
+
+### Recipe 1
+
+This recipes specifies a formula that relates daily bike count to all other variables, except data. The date variable is used to determine a factor variable for weekday/weekend which is also used in the model, but the date variable itself is ignored. No interactions between variables are considered, numeric variables are standardized, and dummy variables are created for seasons, holiday, and weekend.
+
+```{r}
+bike_recipe1 <- recipe(bike_count ~ ., data = bike_train) |>
+  update_role(date, new_role = "ID") |>
+  step_mutate(weekend = if_else((wday(date) %in% 1:5), "No Weekend", "Weekend")) |>
+  step_string2factor(weekend) |>
+  step_normalize(where(is.numeric)) |>
+  step_dummy(seasons, holiday, weekend)
+```
+
+
+
+### Recipe 2
+
+The second recipe is like the first, but additionally considers interactions between seasons and holiday, seasons and temp, and temp and rainfall.
+
+```{r}
+bike_recipe2 <- recipe(bike_count ~ ., data = bike_train) |>
+  update_role(date, new_role = "ID") |>
+  step_mutate(weekend = if_else((wday(date) %in% 1:5), "No Weekend", "Weekend")) |>
+  step_string2factor(weekend) |>
+  step_normalize(where(is.numeric)) |>
+  step_dummy(seasons, holiday, weekend) |>
+  step_interact(terms = ~ starts_with("seasons"):starts_with("holiday") + starts_with("seasons"):temp + temp:rainfall)
+```
+
+
+
+### Recipe 3
+
+The third recipe is the same as the second, but additionally includes quadratic terms for each numerical predictor variable.
+
+```{r}
+bike_recipe3 <- recipe(bike_count ~ ., data = bike_train) |>
+  update_role(date, new_role = "ID") |>
+  step_mutate(weekend = if_else((wday(date) %in% 1:5), "No Weekend", "Weekend")) |>
+  step_string2factor(weekend) |>
+  step_normalize(where(is.numeric)) |>
+  step_dummy(seasons, holiday, weekend) |>
+  step_interact(terms = ~ starts_with("seasons"):starts_with("holiday") + starts_with("seasons"):temp + temp:rainfall) |>
+  step_poly(rainfall,snowfall,temp,hum,wind_speed,vis,dew_pt,sol_rad)
+```
+
+prep(training = bike_train) |>
+  bake(bike_train)
+
+
+### Set Up Model
+
+Linear regression model with engine "lm"
+  
+```{r}
+bike_model <- linear_reg() |>
+  set_engine("lm")
+```
+
+
+
+### Set Up Workflows
+
+```{r}
+workflow1 <- workflow() |>
+  add_recipe(bike_recipe1) |>
+  add_model(bike_model)
+
+workflow2 <- workflow() |>
+  add_recipe(bike_recipe2) |>
+  add_model(bike_model)
+
+workflow3 <- workflow() |>
+  add_recipe(bike_recipe3) |>
+  add_model(bike_model)
+```
+
+
+
+### Generate Model Fits
+
+```{r}
+fit1 <- workflow1 |>
+  fit_resamples(folds)
+
+fit2 <- workflow2 |>
+  fit_resamples(folds)
+
+fit3 <- workflow3 |>
+  fit_resamples(folds)
+```
+
+
+
+### Check training set CV error on the model fits:
+
+```{r}
+fit1 |>
+  collect_metrics()
+
+fit2 |>
+  collect_metrics()
+
+fit3 |>
+  collect_metrics()
+```
+
+The rmse gets lower with subsequent models. Fit 3 with quadratic terms had the lowest rmse. It also had the highest rsq. Fit3 is the best model based on training set CV error..
+
+
+
+### Fit "best" model (fit3) to the entire training set using the last_fit() function, find the rmse on the test set, and obtain the final model coefficinet table:
+
+```{r}
+best_fit <- last_fit(workflow3, bike_split)
+collect_metrics(best_fit)
+extract_fit_parsnip(best_fit) |>
+  tidy() |>
+  print(n = 29)
+```
+
+The rmse on the test set for the best fit model is 0.344.
